@@ -42,7 +42,7 @@ jobs:
         uses: openwrt/gh-action-sdk@main
         env:
           ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.sdk }}
-          FEEDNAME: luci-app-daed
+          FEEDNAME: daede
           PACKAGES: luci-app-daede
           NO_REFRESH_CHECK: true
           INDEX: 1
@@ -53,7 +53,7 @@ jobs:
         run: |
           ARCH="${{ matrix.arch }}"
           mkdir -p dist/release dist/feed
-          FEED_DIR="bin/packages/${ARCH}/luci-app-daed"
+          FEED_DIR="bin/packages/${ARCH}/daede"
 
           for f in "$FEED_DIR"/*.ipk; do
             [ -f "$f" ] || continue
