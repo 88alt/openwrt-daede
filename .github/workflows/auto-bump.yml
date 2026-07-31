@@ -133,7 +133,7 @@ jobs:
           rm -rf gate-artifacts
           gh run download "$LAST_RUN_ID" -D gate-artifacts
           for pkg in dae daed; do
-            ls gate-artifacts/*/"$pkg"-*.apk >/dev/null 2>&1 || {
+            find gate-artifacts -name "${pkg}-*.apk" -o -name "${pkg}_*.ipk" | grep -q . || {
               echo "gate failed: $pkg produced no package"; exit 1; }
           done
 
