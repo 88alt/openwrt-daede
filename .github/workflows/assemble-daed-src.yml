@@ -63,6 +63,7 @@ jobs:
           ( cd "$OUT/wing" \
               && go mod edit -replace github.com/daeuniverse/outbound=../outbound \
               && go mod edit -replace github.com/daeuniverse/quic-go=../quic-go \
+              && go mod edit -replace github.com/olicesx/quic-go=../quic-go \
               && go mod tidy \
               && cp "$GITHUB_WORKSPACE/ci/default.pgo" default.pgo )
 
