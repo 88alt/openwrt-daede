@@ -5,8 +5,6 @@ name: Auto bump dae/daed
 # all work happens on auto-bump-staging; main is fast-forwarded only on success.
 
 on:
-  schedule:
-    - cron: '30 */6 * * *'
   workflow_dispatch:
 
 permissions:
