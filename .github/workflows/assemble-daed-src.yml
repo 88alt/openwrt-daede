@@ -50,11 +50,13 @@ jobs:
           git -C "$OUT/wing/dae-core" -c user.email=ci@local -c user.name=ci merge --no-edit "$CORE_UPSTREAM_COMMIT"
           git -C "$OUT/wing/dae-core" submodule update --init
           fetch_at https://github.com/kenzok8/outbound "$OUT/outbound" "$OUTBOUND_COMMIT"
-          # quic-go: fetch the base, then apply our self-owned perf patches instead
-          # of depending on the olicesx perf branch. Reproduces the same tree.
+          # quic-go: fetch the base, then apply any self-owned perf patches we still
+          # carry on top of it. An empty patch directory is a no-op.
           fetch_at https://github.com/kenzok8/quic-go "$OUT/quic-go" "$QUICGO_BASE_COMMIT"
-          git -C "$OUT/quic-go" -c user.name=ci -c user.email=ci@local \
-              am "$GITHUB_WORKSPACE"/ci/patches/quic-go/*.patch
+          if ls "$GITHUB_WORKSPACE"/ci/patches/quic-go/*.patch >/dev/null 2>&1; then
+            git -C "$OUT/quic-go" -c user.name=ci -c user.email=ci@local \
+                am "$GITHUB_WORKSPACE"/ci/patches/quic-go/*.patch
+          fi
 
           # Freeze go deps so the SDK build is deterministic.
           ( cd "$OUT/wing/dae-core" && go mod tidy )
