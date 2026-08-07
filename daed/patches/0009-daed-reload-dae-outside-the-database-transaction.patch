@@ -1,6 +1,4 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
-From: kenzok8 <kenzok8@gmail.com>
-Date: Sat, 8 Aug 2026 02:12:42 +0800
 Subject: [PATCH] daed: reload dae outside the database transaction
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
