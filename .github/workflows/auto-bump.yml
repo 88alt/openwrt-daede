@@ -89,7 +89,7 @@ jobs:
           # dae core: mirror kdae as delete-insurance; build still pins frozen CORE_COMMIT (an ancestor of kdae), so output is unchanged.
           gh repo sync kenzok8/dae -b kdae --source olicesx/dae --force
           # quic-go: mirror the branch QUICGO_BASE_COMMIT lives on — assemble fetches it from our fork.
-          gh repo sync kenzok8/quic-go -b perf/skip-addr-parse --source olicesx/quic-go --force
+          gh repo sync kenzok8/quic-go -b fix/audit-remediation --source olicesx/quic-go --force
 
       - name: Stage new pins
         if: steps.detect.outputs.changed == 'true'
@@ -160,27 +160,65 @@ jobs:
         run: |
           set -eu
           absorbed=""
-          scan() { # <pkgdir> <src subdir inside the tarball>
-            makefile="$1/Makefile"
+          scan() { # <pkgdir> <src subdir inside the tarball> <patch dirs...>
+            pkg="$1"
+            makefile="$pkg/Makefile"
+            srcdir="$2"
+            shift 2
             src=$(sed -n 's/^PKG_SOURCE:=//p' "$makefile")
             url=$(sed -n 's/^PKG_SOURCE_URL:=//p' "$makefile")
             ver=$(sed -n 's/^PKG_VERSION:=//p' "$makefile")
-            [ -n "$src" ] && [ -n "$url" ] || return 0
+            [ -n "$src" ] && [ -n "$url" ] || {
+              echo "::error::cannot resolve source for $pkg"; return 1; }
             rm -rf scan-src scan.tar.gz
-            curl -fsSL -o scan.tar.gz "$url/$src" || return 0
+            curl -fsSL -o scan.tar.gz "$url/$src"
             mkdir scan-src
             tar xzf scan.tar.gz -C scan-src
-            d="scan-src/$1-$ver/$2"
-            [ -d "$d" ] || return 0
-            for p in "$1"/patches/*.patch; do
+            d="scan-src/$pkg-$ver/$srcdir"
+            [ -d "$d" ] || {
+              echo "::error::missing source directory $d"; return 1; }
+            for patch_dir in "$@"; do
+              for p in "$pkg"/"$patch_dir"/*.patch; do
+                [ -f "$p" ] || continue
+                if patch -p1 -d "$d" --dry-run -R -f <"$p" >/dev/null 2>&1; then
+                  absorbed="${absorbed}\n- \`$p\`"
+                elif patch -p1 -d "$d" --dry-run -f <"$p" >/dev/null 2>&1; then
+                  patch -p1 -d "$d" -f <"$p" >/dev/null
+                else
+                  echo "::error::$p neither reverse-applies nor forward-applies"
+                  return 1
+                fi
+              done
+            done
+          }
+          scan_git() { # <name> <repo> <commit> <patch dir>
+            name="$1"
+            repo="$2"
+            commit="$3"
+            patch_dir="$4"
+            d="scan-git/$name"
+            rm -rf "$d"
+            git init -q "$d"
+            git -C "$d" remote add origin "$repo"
+            git -C "$d" fetch -q --depth=1 origin "$commit"
+            git -C "$d" checkout -q FETCH_HEAD
+            for p in "$patch_dir"/*.patch; do
               [ -f "$p" ] || continue
-              if patch -p1 -d "$d" --dry-run -R -f <"$p" >/dev/null 2>&1; then
+              if git -C "$d" apply --check -R "$GITHUB_WORKSPACE/$p" >/dev/null 2>&1; then
                 absorbed="${absorbed}\n- \`$p\`"
+              elif git -C "$d" apply --check "$GITHUB_WORKSPACE/$p" >/dev/null 2>&1; then
+                git -C "$d" apply "$GITHUB_WORKSPACE/$p"
+              else
+                echo "::error::$p neither reverse-applies nor forward-applies"
+                return 1
               fi
             done
           }
-          scan dae core
-          scan daed wing
+          . ci/pins.env
+          scan dae core patches patches_arm
+          scan daed wing patches patches_arm
+          scan_git outbound https://github.com/kenzok8/outbound "$OUTBOUND_COMMIT" ci/patches/outbound
+          scan_git quic-go https://github.com/kenzok8/quic-go "$QUICGO_BASE_COMMIT" ci/patches/quic-go
           title="🧹 patches: upstream absorbed some of ours"
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "upstream absorbed in:title" --json number --jq '.[0].number' 2>/dev/null || echo "")
           if [ -z "$absorbed" ]; then
