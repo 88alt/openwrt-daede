@@ -5,17 +5,15 @@ olicesx performance forks. Pins live in `ci/pins.env`; assemble workflows fetch
 them from the `kenzok8/*` mirrors so a disappearing upstream branch cannot break
 an old release.
 
-## Current frozen pair
+## Pinned performance pair
 
-| component | branch | pinned commit |
-|-----------|--------|---------------|
-| outbound | `olicesx/outbound:perf/complete-optimizations` | `ae9f25d31dcf` |
-| quic-go | `olicesx/quic-go:fix/audit-remediation` | `08e975ef39de` |
+`ci/pins.env` is the only source of truth for the current outbound and quic-go
+commits. Do not copy current commit IDs into this document; the weekly perf lane
+may move them.
 
-The outbound `go.mod` requires the quic-go pseudo-version ending in
-`08e975ef39de`, so these commits must move as a pair. The quic-go base contains
-the earlier performance work plus the later QUIC security, buffer ownership and
-GSO capacity fixes.
+`OUTBOUND_COMMIT`, `QUICGO_BASE_COMMIT` and `QUICGO_PERF_TIP` form one pinned
+set. Both quic-go values must use the full commit required by outbound's
+`go.mod`, so all three pins move together.
 
 `olicesx/quic-go` is not a GitHub fork of `quic-go/quic-go`; its module name and
 history differ. Do not rebase it onto an official quic-go tag. A refresh means
@@ -45,27 +43,36 @@ upstream before deleting a reported local patch.
 
 ## Refresh procedure
 
-1. Read outbound's `go.mod` and resolve the full quic-go commit named by its
-   pseudo-version.
-2. Audit every local patch against the proposed bases:
+1. Sync `olicesx/outbound:perf/complete-optimizations` to the matching
+   `perf/complete-optimizations` branch in `kenzok8/outbound`.
+2. Read `go.mod` at the selected outbound commit, extract the 12-character
+   quic-go suffix from its pseudo-version, and resolve it to a full 40-character
+   commit in `olicesx/quic-go`.
+3. Fetch that exact quic-go commit and push it to the immutable
+   `kenzok8/quic-go:daede-pinned-<40sha>` ref. The movable `daede-pinned` alias
+   may point to the same commit, but it cannot replace the immutable ref.
+4. Audit every local patch against the proposed bases:
    - reverse apply succeeds: upstream may have absorbed it; inspect the source
      before deleting it;
    - forward apply succeeds: keep it;
    - neither succeeds: port it and verify the original behavior still exists.
-3. Mirror the exact outbound and quic-go branches into `kenzok8/*` before
-   changing `ci/pins.env`.
-4. For outbound, apply `ci/patches/outbound/*.patch` and run
+5. After the mirror and patch audit succeed, update `OUTBOUND_COMMIT`,
+   `QUICGO_BASE_COMMIT` and `QUICGO_PERF_TIP` together in `ci/pins.env`.
+6. For outbound, apply `ci/patches/outbound/*.patch` and run
    `go test ./protocol/shadowsocks_stream/`.
-5. For quic-go, apply any `ci/patches/quic-go/*.patch` and run `go build ./...`.
-6. On a staging branch run both assemble workflows and the four-SDK dae/daed
-   build gate. Promote to `main` only after every package exists.
+7. For quic-go, apply any `ci/patches/quic-go/*.patch` and run `go build ./...`.
+8. On a staging branch, run both assemble workflows and all four gate build
+   combinations (2 SDK versions × 2 architectures). Promote to `main` only
+   after every package exists.
 
 ## Automatic safeguards
 
-- `Detect upstream changes` holds outbound when its required quic-go suffix no
-  longer matches `QUICGO_BASE_COMMIT`.
-- `perf-staleness` opens a tracking issue for that mismatch and closes it after
-  the pair is aligned again.
+- The core lane runs every 6 hours and updates only daed, dae-wing and the
+  official dae core pin, leaving the performance pair unchanged.
+- The perf lane runs every Monday at 03:30 Beijing time and atomically updates
+  outbound plus both quic-go pins to the exact commit required by outbound.
+- Each lane assembles on a unique staging branch; any source, patch or SDK build
+  failure stops at the gate before the tested SHA can reach `main`.
 - `patch-absorbed` checks all local patch locations so an upstream sync cannot
   silently discard an ARM, daed, SSR or future quic-go fix.
 
