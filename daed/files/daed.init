@@ -1,23 +1,7 @@
 #!/bin/sh /etc/rc.common
 # Copyright (C) 2023 Tianling Shen <cnsztl@immortalwrt.org>
-#
-# Improvements in this revision:
-#   - log every branch via `logger -t daed-init` so silent procd
-#     failures (OOM-kill, kernel panic, abort-before-logger-init)
-#     leave a trail
-#   - bump respawn budget (3600 5 10 = threshold/timeout/retry, see
-#     comment in start_service) so a flapping validate step does not
-#     push daed into the "enabled/stopped" state within a single day
-#   - best-effort OOM preference is applied in daed-guard via
-#     /proc/self/oom_score_adj (procd has no oom_adj case — see
-#     start_service comment and daed-guard); do not use
-#     procd_set_param oom_adj here
-#   - stop_service() now reports the state of /sys/fs/bpf/daed and
-#     `ip netns list` so an operator can immediately see whether
-#     the dataplane was left attached (and needs a reboot) after
-#     a manual stop
-#   - drop the `rm -f "$LOG"` in stop_service so post-mortem logs
-#     survive a manual stop
+# daed-guard handles bounded child shutdown and post-exit netns/veth cleanup.
+# Keep the log file and a pre-stop state snapshot for diagnostics.
 
 USE_PROCD=1
 START=99
@@ -61,25 +45,18 @@ start_service() {
 
 	procd_set_param limits core="unlimited"
 	procd_set_param limits nofile="1000000 1000000"
-	# Give daed time to detach hooks and let daed-guard reap its child.
-	procd_set_param term_timeout 20
+	# daed-guard escalates its child after 20 seconds. Leave time for
+	# reap and post-exit cleanup before procd kills the wrapper.
+	procd_set_param term_timeout 30
 	# procd_set_param respawn: arguments are (threshold, timeout, retry).
-	#   threshold = seconds in which to count retries (3600 = 1 hour)
+	#   threshold = runtime that resets the short-lived exit counter
 	#   timeout   = seconds to wait between retries
-	#   retry     = maximum number of restart attempts before procd
-	#               gives up and leaves the service in
-	#               "enabled/stopped".
-	# 10 retries per hour is high enough to ride out a flapping
-	# validate step, low enough that a permanently broken config
-	# still surfaces. (Upstream default is 5 — too low once we
-	# add a 5 s tail cleanup in a reload storm.)
+	#   retry     = maximum short-lived exits before procd gives up
+	# Reset the counter after one hour of stable runtime; otherwise retry
+	# after 5 seconds and stop after 10 failures.
 	procd_set_param respawn 3600 5 10
-	# OOM preference is intentionally NOT set via procd_set_param.
-	# procd.sh has no oom_adj / oom_score_adj case; such a call is
-	# silently dropped and never reaches the kernel. daed-guard
-	# writes /proc/self/oom_score_adj before forking daed so the
-	# child inherits the score. See kenzok8 review on
-	# kenzok8/openwrt-daede#70.
+	# daed-guard sets oom_score_adj before forking; procd has no
+	# oom_adj/oom_score_adj parameter.
 	# procd_set_param stdout 1
 	procd_set_param stderr 1
 
@@ -89,13 +66,8 @@ start_service() {
 
 stop_service() {
 	log "stop: begin"
-	# Pre-stop dataplane snapshot only. Real netns/veth cleanup
-	# runs in daed-guard's post-exit path after the child exits.
-	# Calling daed_cleanup_runtime here while daed is still alive
-	# is a no-op (pgrep hits -> early return under
-	# DAED_GUARD_CLEANUP=start) and a "post-cleanup" log would
-	# falsely imply cleanup already ran. kenzok8 review on
-	# kenzok8/openwrt-daede#70.
+	# Cleanup runs in daed-guard after its child exits. Record only a
+	# pre-stop snapshot here; pin entries do not prove TC attachment.
 	local pinned="" ns_left=""
 	if [ -d /sys/fs/bpf/daed ]; then
 		pinned=$(ls /sys/fs/bpf/daed 2>/dev/null | tr '\n' ' ')
@@ -103,17 +75,7 @@ stop_service() {
 	if ip netns list 2>/dev/null | grep -q '^daens'; then
 		ns_left="daens"
 	fi
-	log "stop: pre-stop state — bpf_pinned=[${pinned:-none}] netns_left=[${ns_left:-none}]"
-}
-
-restart() {
-	log "restart: stop"
-	stop
-	sleep 1
-	log "restart: cleanup"
-	daed_cleanup_runtime
-	log "restart: start"
-	start
+	log "stop: pre-stop state — bpf_pin_entries=[${pinned:-none}] netns_left=[${ns_left:-none}]"
 }
 
 service_triggers() {

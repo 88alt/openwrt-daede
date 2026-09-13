@@ -1,28 +1,7 @@
 #!/bin/sh
-# daed-guard — thin wrapper around /usr/bin/daed that ensures stale
-# kernel state (network namespace, veth pair) is reaped before the
-# daemon starts AND after it exits.
-#
-# The wrapper only reaps stale netns/veth state. daed itself owns
-# TC clsact detach; /sys/fs/bpf/daed is normal persistent pin state.
-#
-# Two cleanup passes:
-#   - before exec: a stale run may have left daens / dae0 from an
-#     OOM-kill or kernel panic. We reap first.
-#   - after exit: a normal exit (including signal-induced ones)
-#     also reaps, so a partial state never survives.
-#
-# Signal handling:
-#   - TERM / INT / HUP / QUIT forwarded to the child so dae can
-#     run its own graceful shutdown (DetachBpfHooks + Close).
-#   - exit trap runs the post-exit cleanup unconditionally.
-#
-# This wrapper preserves the kenzok8/openwrt-daede convention of
-# backgrounding the child with `&` and `wait`ing on it, so the
-# wrapper itself stays around to do the post-exit cleanup. That
-# is more robust than the daeuniverse/daed reference (which uses
-# `exec`) because it lets us distinguish "child exited cleanly"
-# from "wrapper itself was signalled".
+# Keep daed as a child so signals can be forwarded and stale netns/veth
+# state can be cleaned before start and after exit. daed owns TC detach;
+# /sys/fs/bpf/daed is normal persistent state and is never removed here.
 
 . /usr/share/daed/cleanup.sh
 
@@ -39,22 +18,41 @@ fi
 # respawn it.
 child_pid=
 pending_signal=
+shutdown_signal=
+shutdown_elapsed=0
+forced_kill=0
+child_term_timeout=20
 
 forward_signal() {
-	_sig="$1"
+	local sig="$1"
 	if [ -z "$child_pid" ]; then
-		pending_signal="$_sig"
-		logger -t daed-init "signal $_sig received before daed child started; launch cancelled"
+		pending_signal="$sig"
+		logger -t daed-init "signal $sig received before daed child started; launch cancelled"
 		return 0
 	fi
-	[ -n "$_sig" ] && kill -"$_sig" "$child_pid" 2>/dev/null
+	case "$sig" in
+		TERM|INT|QUIT)
+			if [ -z "$shutdown_signal" ]; then
+				shutdown_signal="$sig"
+				shutdown_elapsed=0
+			fi
+			;;
+	esac
+	kill -"$sig" "$child_pid" 2>/dev/null
 }
 
 exit_with_signal() {
-	_sig="$1"
+	local sig="$1"
 	trap - TERM INT HUP QUIT
-	kill -"$_sig" "$$" 2>/dev/null
+	kill -"$sig" "$$" 2>/dev/null
 	exit 1
+}
+
+child_is_running() {
+	local state
+	kill -0 "$child_pid" 2>/dev/null || return 1
+	state=$(awk '{ print $3 }' "/proc/$child_pid/stat" 2>/dev/null)
+	[ "$state" != "Z" ]
 }
 trap 'forward_signal TERM' TERM
 trap 'forward_signal INT' INT
@@ -62,6 +60,7 @@ trap 'forward_signal HUP' HUP
 trap 'forward_signal QUIT' QUIT
 
 start_child() {
+	local sig
 	# Keep this check inside the function as well as at the call site:
 	# it closes the ordinary pre-start window, while the pending-signal
 	# path below handles a signal arriving during the background fork.
@@ -69,9 +68,9 @@ start_child() {
 	/usr/bin/daed "$@" &
 	child_pid=$!
 	if [ -n "$pending_signal" ]; then
-		_sig="$pending_signal"
+		sig="$pending_signal"
 		pending_signal=
-		forward_signal "$_sig"
+		forward_signal "$sig"
 	fi
 }
 
@@ -94,9 +93,24 @@ fi
 status=0
 reaped=0
 while [ "$reaped" -eq 0 ]; do
+	if [ -n "$shutdown_signal" ] && child_is_running; then
+		if [ "$shutdown_elapsed" -ge "$child_term_timeout" ]; then
+			if [ "$forced_kill" -eq 0 ]; then
+				logger -t daed-init "daed did not exit within ${child_term_timeout}s after $shutdown_signal; sending KILL"
+				kill -KILL "$child_pid" 2>/dev/null
+				forced_kill=1
+			fi
+		else
+			sleep 1
+			shutdown_elapsed=$((shutdown_elapsed + 1))
+			continue
+		fi
+		sleep 1
+		continue
+	fi
 	wait "$child_pid" 2>/dev/null
 	status=$?
-	if ! kill -0 "$child_pid" 2>/dev/null; then
+	if ! child_is_running; then
 		reaped=1
 	fi
 done
