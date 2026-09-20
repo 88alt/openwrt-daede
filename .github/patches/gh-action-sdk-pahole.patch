@@ -1,10 +1,14 @@
 --- a/Dockerfile
 +++ b/Dockerfile
-@@ -4,6 +4,12 @@ FROM $CONTAINER:$ARCH
+@@ -4,6 +4,16 @@ FROM $CONTAINER:$ARCH
  
  LABEL "com.github.actions.name"="OpenWrt SDK"
  
-+RUN sudo apt-get update -qq && \
++# Bullseye SDK images still point at retired security packages.
++RUN if grep -q bullseye /etc/os-release; then \
++      sudo sed -i 's|http://deb.debian.org/debian-security|https://snapshot.debian.org/archive/debian-security/20260903T220410Z|g' /etc/apt/sources.list; \
++    fi && \
++    sudo apt-get -o Acquire::Check-Valid-Until=false update -qq && \
 +    sudo apt-get install -y --no-install-recommends dwarves && \
 +    sudo apt-get clean && \
 +    sudo rm -rf /var/lib/apt/lists/* && \
