@@ -1,0 +1,15 @@
+--- a/Dockerfile
++++ b/Dockerfile
+@@ -4,6 +4,12 @@ FROM $CONTAINER:$ARCH
+ 
+ LABEL "com.github.actions.name"="OpenWrt SDK"
+ 
++RUN sudo apt-get update -qq && \
++    sudo apt-get install -y --no-install-recommends dwarves && \
++    sudo apt-get clean && \
++    sudo rm -rf /var/lib/apt/lists/* && \
++    command -v pahole && pahole --version
++
+ ADD entrypoint.sh /
+ 
+ ENTRYPOINT ["/entrypoint.sh"]

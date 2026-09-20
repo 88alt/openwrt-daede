@@ -32,10 +32,21 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Prepare SDK action with pahole
+        uses: actions/checkout@v6
+        with:
+          repository: kenzok8/gh-action-sdk
+          ref: 44f98c51d04aebd1aa79fe4f603559c1ec2085da
+          path: .github/actions/gh-action-sdk
+          persist-credentials: false
+
+      - name: Add pahole to SDK image
+        run: git -C .github/actions/gh-action-sdk apply "$GITHUB_WORKSPACE/.github/patches/gh-action-sdk-pahole.patch"
+
       - name: Build packages
         id: sdk
         continue-on-error: true
-        uses: kenzok8/gh-action-sdk@hash
+        uses: ./.github/actions/gh-action-sdk
         env:
           CONTAINER: immortalwrt/sdk
           ARCH: ${{ matrix.arch }}-openwrt-${{ matrix.sdk }}
