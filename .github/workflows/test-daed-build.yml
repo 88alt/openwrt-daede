@@ -1,6 +1,6 @@
 name: Test daed build
 
-# Iteration-only: builds dae/daed for one arch and uploads the .apk as an artifact.
+# Iteration-only: builds dae/daed for release targets and uploads package artifacts.
 # No feed upload, no release — safe to run on feature branches.
 
 on:
@@ -19,7 +19,15 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [x86_64, aarch64_generic]
+        arch:
+          - aarch64_cortex-a53
+          - aarch64_cortex-a72
+          - aarch64_generic
+          - arm_cortex-a7_neon-vfpv4
+          - arm_cortex-a9
+          - arm_cortex-a9_neon
+          - i386_pentium4
+          - x86_64
         sdk: ["24.10", "25.12"]
     steps:
       - uses: actions/checkout@v6
