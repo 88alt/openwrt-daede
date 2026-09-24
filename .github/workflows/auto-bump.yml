@@ -36,6 +36,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Select sync lane
         id: lane
@@ -290,7 +291,8 @@ jobs:
             echo "::error::staging commit is not a full 40-character SHA: $staging_sha"
             exit 1
           fi
-          git push --force origin "HEAD:refs/heads/$STAGING"
+          git -c credential.helper='!gh auth git-credential' \
+            push --force origin "HEAD:refs/heads/$STAGING"
           echo "staging_sha=$staging_sha" >> "$GITHUB_OUTPUT"
 
       - name: Assemble + gate build on staging
@@ -386,7 +388,7 @@ jobs:
           audit_dir=$(mktemp -d)
           trap 'rm -rf "$audit_dir"' EXIT
           git archive "$tested_sha" | tar -x -C "$audit_dir"
-          bash "$audit_dir/scripts/audit-upstream.sh" "$audit_dir"
+          env -u GH_TOKEN -u GITHUB_TOKEN bash "$audit_dir/scripts/audit-upstream.sh" "$audit_dir"
           # A single real SDK build catches wing/core compile errors before the
           # full matrix. The test workflow also checks for both package files.
           run_and_wait test-daed-build.yml "$tested_sha" -f packages="dae daed" -f arch=x86_64 -f sdk=25.12
