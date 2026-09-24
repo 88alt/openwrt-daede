@@ -318,7 +318,7 @@ jobs:
           wait_run() {
             local id=$1 fails=0 out status conclusion
             while :; do
-              if out=$(gh run view "$id" --json status,conclusion --jq '.status + " " + .conclusion' 2>&1); then
+              if out=$(gh run view "$id" --json status,conclusion --jq '.status + " " + (.conclusion // "")' 2>&1); then
                 fails=0
                 read -r status conclusion <<<"$out"
                 if [ "$status" = completed ]; then
