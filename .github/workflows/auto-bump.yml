@@ -174,10 +174,12 @@ jobs:
           OUTBOUND_SHA: ${{ steps.detect.outputs.outbound }}
           QUICGO_SHA: ${{ steps.detect.outputs.quicgo }}
         run: |
+          if [ "$CHANGED" = true ]; then
+            echo "::warning::Upstream update pending compatibility review: $CHANGES"
+          fi
           {
             echo "## $LANE upstream check"
             if [ "$CHANGED" = true ]; then
-              echo "::warning::Upstream update pending compatibility review: $CHANGES"
               echo "Pending review: $CHANGES"
               if [ "$LANE" = core ]; then
                 echo "daed: \`$DAED_SHA\`"
