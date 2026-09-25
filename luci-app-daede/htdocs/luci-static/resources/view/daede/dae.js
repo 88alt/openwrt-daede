@@ -706,7 +706,7 @@ function renderDaeEditor() {
 		save.disabled = true;
 		flashStatus(_('Validating…'));
 		fs.write(VALIDATE_PATH, textarea.value, 384)
-			.then(function() { return fs.exec('/usr/bin/dae', ['validate', '-c', VALIDATE_PATH]); })
+			.then(function() { return fs.exec('/usr/bin/env', ['DAE_LOCATION_ASSET=/usr/share/v2ray', '/usr/bin/dae', 'validate', '-c', VALIDATE_PATH]); })
 			.then(function(res) {
 				if (res && res.code !== 0) {
 					const err = (res.stderr || res.stdout || ('exit ' + res.code)).trim().split('\n')[0];

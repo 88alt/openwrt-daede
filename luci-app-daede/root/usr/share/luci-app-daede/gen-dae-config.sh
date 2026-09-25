@@ -310,7 +310,7 @@ generate() {
 
 	# overwrite live config only if validation passes
 	local out
-	out="$("$DAE_BIN" validate -c "$TMP_GEN" 2>&1)"
+	out="$(DAE_LOCATION_ASSET="/usr/share/v2ray" "$DAE_BIN" validate -c "$TMP_GEN" 2>&1)"
 	if [ $? -ne 0 ]; then
 		echo "validate failed: $(echo "$out" | head -1)" >&2
 		rm -f "$TMP_GEN"
