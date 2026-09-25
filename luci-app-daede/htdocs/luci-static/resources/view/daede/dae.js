@@ -45,6 +45,7 @@ const DEFAULT_TEMPLATE =
 	'    }\n' +
 	'    routing {\n' +
 	'        request {\n' +
+	'            qname(suffix:googleapis.cn) -> fallbackdns\n' +
 	'            qname(geosite:cn) -> cndns\n' +
 	'            fallback: fallbackdns\n' +
 	'        }\n' +
@@ -70,6 +71,7 @@ const DEFAULT_TEMPLATE =
 	'    l4proto(udp) && dport(123) -> direct\n' +
 	'    domain(connectivitycheck.gstatic.com) -> direct\n' +
 	'    domain(msftconnecttest.com) -> direct\n' +
+	'    domain(suffix:googleapis.cn) -> proxy\n' +
 	'    dip(geoip:cn) -> direct\n' +
 	'    domain(geosite:cn) -> direct\n' +
 	'    fallback: proxy\n' +

@@ -271,6 +271,7 @@ generate() {
 		echo "    routing {"
 		echo "        request {"
 		[ "$block_ads" = "1" ] && echo "            qname(geosite:category-ads-all) -> reject"
+		echo "            qname(suffix:googleapis.cn) -> fallbackdns"
 		echo "            qname(geosite:cn) -> cndns"
 		echo "            fallback: fallbackdns"
 		echo "        }"
@@ -295,6 +296,7 @@ generate() {
 		# OS connectivity checks direct (avoid captive-portal false positives)
 		echo "    domain(connectivitycheck.gstatic.com) -> direct"
 		echo "    domain(msftconnecttest.com) -> direct"
+		echo "    domain(suffix:googleapis.cn) -> ${fallback}"
 		if [ "$cn_direct" = "1" ]; then
 			echo "    dip(geoip:cn) -> direct"
 			echo "    domain(geosite:cn) -> direct"
