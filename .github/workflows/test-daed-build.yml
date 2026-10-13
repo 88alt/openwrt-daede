@@ -70,8 +70,6 @@ jobs:
           NO_REFRESH_CHECK: true
           IGNORE_ERRORS: false
           INDEX: 1
-          KEY_BUILD: ${{ secrets.OPKG_KEY_BUILD }}
-          PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
           GOLANG_REPO: https://github.com/kenzok8/golang
           GOLANG_BRANCH: '1.26'
 

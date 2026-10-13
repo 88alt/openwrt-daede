@@ -6,6 +6,10 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
+      candidate:
+        description: 'Build and verify candidate packages without publishing'
+        type: boolean
+        default: false
       prerelease:
         description: '标记为预发布版本'
         type: boolean
@@ -13,6 +17,9 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -60,6 +67,7 @@ jobs:
           df -h /
 
       - name: Build packages
+        id: sdk
         continue-on-error: true
         uses: ./.github/actions/gh-action-sdk
         env:
@@ -70,17 +78,26 @@ jobs:
           # wall supplies v2ray-geoip / v2ray-geosite (subpackages of v2ray-geodata)
           EXTRA_FEEDS: src-git|wall|https://github.com/kenzok8/wall
           NO_REFRESH_CHECK: true
-          IGNORE_ERRORS: true
+          IGNORE_ERRORS: false
           INDEX: 1
-          KEY_BUILD: ${{ secrets.OPKG_KEY_BUILD }}
-          PRIVATE_KEY: ${{ secrets.APK_PRIVATE_KEY }}
+          # Candidate builds use disposable SDK index keys. The unified feed
+          # signs its own indexes after the exact package bytes pass validation.
+          KEY_BUILD: ${{ !inputs.candidate && secrets.OPKG_KEY_BUILD || '' }}
+          PRIVATE_KEY: ${{ !inputs.candidate && secrets.APK_PRIVATE_KEY || '' }}
           # dae / daed go.mod requires Go 1.26; override SDK's bundled golang.
           GOLANG_REPO: https://github.com/kenzok8/golang
           GOLANG_BRANCH: '1.26'
 
       - name: Require all release packages
+        if: always()
+        env:
+          SDK_OUTCOME: ${{ steps.sdk.outcome }}
         run: |
           set -euo pipefail
+          [ "$SDK_OUTCOME" = success ] || {
+            echo "::error::SDK action concluded $SDK_OUTCOME"
+            exit 1
+          }
           output_dir="bin/packages/${{ matrix.arch }}/daede"
           for package in dae daed luci-app-daede vmlinux-btf; do
             found=0
@@ -138,7 +155,7 @@ jobs:
         with:
           name: packages-sdk${{ matrix.sdk }}-${{ matrix.arch }}
           path: dist/
-          if-no-files-found: ignore
+          if-no-files-found: error
 
       - name: Upload build logs
         if: always()
@@ -154,6 +171,7 @@ jobs:
   release:
     name: Create Release
     needs: [build, verify]
+    if: github.event_name != 'workflow_dispatch' || inputs.candidate != true
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -349,6 +367,7 @@ jobs:
   upload_feed:
     name: Upload Feed to B2
     needs: [build, verify]
+    if: github.event_name != 'workflow_dispatch' || inputs.candidate != true
     runs-on: ubuntu-latest
 
     steps:

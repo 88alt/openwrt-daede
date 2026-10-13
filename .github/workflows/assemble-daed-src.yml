@@ -138,8 +138,8 @@ jobs:
           sed -i "s/^PKG_RELEASE:=.*/PKG_RELEASE:=${rel}/" daed/Makefile
           sed -i "s|^PKG_SOURCE:=.*|PKG_SOURCE:=${TARBALL}|" daed/Makefile
           sed -i "s/^PKG_HASH:=.*/PKG_HASH:=${PKG_HASH}/" daed/Makefile
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git config user.name "kenzok8"
+          git config user.email "kenzok8@gmail.com"
           git add daed/Makefile
           git diff --cached --quiet && { echo "no change"; exit 0; }
           git commit -m "Assemble daed source" \
