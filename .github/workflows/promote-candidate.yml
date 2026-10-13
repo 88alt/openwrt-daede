@@ -1,0 +1,97 @@
+name: Promote verified daede candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_sha:
+        description: Main SHA before the candidate was staged
+        required: true
+        type: string
+      candidate_sha:
+        description: Exact validated staging SHA
+        required: true
+        type: string
+      build_run_id:
+        description: Successful 16-target release candidate run ID
+        required: true
+        type: string
+      staging:
+        description: Staging branch that points to the candidate SHA
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: read
+
+concurrency:
+  group: auto-bump-dae-daed
+  cancel-in-progress: false
+
+jobs:
+  promote:
+    name: Publish 252-verified candidate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check candidate identity
+        env:
+          BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          STAGING: ${{ inputs.staging }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$STAGING" =~ ^auto-bump-staging-[0-9]+-[0-9]+$ ]]
+          [ "$(git ls-remote origin "refs/heads/$STAGING" | cut -f1)" = "$CANDIDATE_SHA" ]
+          git fetch -q origin "$CANDIDATE_SHA"
+
+      - name: Download the verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$BUILD_RUN_ID" --pattern 'packages-sdk*' --dir artifacts
+
+      - name: Verify release assets
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-release-assets.py artifacts publish "$CANDIDATE_SHA" "$BUILD_RUN_ID"
+
+      - name: Install rclone (pinned)
+        env:
+          RCLONE_VER: "1.69.1"
+        run: |
+          set -euo pipefail
+          zip="rclone-v${RCLONE_VER}-linux-amd64.zip"
+          base="https://downloads.rclone.org/v${RCLONE_VER}"
+          curl -fsSL -o "$zip" "${base}/${zip}"
+          curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
+          grep " ${zip}$" SHA256SUMS | sha256sum -c -
+          unzip -q "$zip"
+          sudo install -m 0755 "rclone-v${RCLONE_VER}-linux-amd64/rclone" /usr/local/bin/rclone
+
+      - name: Promote exact candidate
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ inputs.base_sha }}
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+          STAGING: ${{ inputs.staging }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AGGREGATE_FEED_TOKEN: ${{ secrets.AGGREGATE_FEED_TOKEN }}
+        run: bash scripts/promote-candidate.sh
