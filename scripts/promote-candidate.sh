@@ -114,8 +114,8 @@ else
 fi
 
 if [[ "$remote_main" = "$BASE_SHA" ]]; then
-    git config user.name "kenzok8"
-    git config user.email "kenzok8@gmail.com"
+    git config user.name "github-actions[bot]"
+    git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
     git tag -a "$tag" "$CANDIDATE_SHA" -m "Release $tag"
     git -c credential.helper='!gh auth git-credential' push --atomic \
         --force-with-lease="refs/heads/main:$BASE_SHA" origin \
