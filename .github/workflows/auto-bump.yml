@@ -5,7 +5,7 @@ name: Sync and release dae/daed
 
 on:
   schedule:
-    - cron: '30 */6 * * *'
+    - cron: '30 0 * * *'
     - cron: '30 19 * * 0'
   workflow_dispatch:
     inputs:
