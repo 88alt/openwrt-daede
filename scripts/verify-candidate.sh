@@ -81,7 +81,12 @@ for v in record["verifications"]:
     assert step not in seen, f"duplicate verification step: {step}"
     seen.add(step)
     path, job = jobs[step]
-    assert v["workflow"] == path, f"{step}: workflow mismatch: {v['workflow']}"
+    # 规范化记录里的 workflow 标识：早期 gate 写的是文件名，新 gate 写全路径。
+    # 两者都接受，统一成全路径；真正的安全核对在 bash 里用 API 返回的 .path 做。
+    wf = v["workflow"]
+    if not wf.startswith(".github/"):
+        wf = ".github/workflows/" + wf
+    assert wf == path, f"{step}: workflow mismatch: {v['workflow']}"
     print(f"{step}\t{v['run_id']}\t{v['attempt']}\t{v['head_sha']}\t{job}\t{path}")
 assert seen == set(jobs), f"missing verification steps: {set(jobs) - seen}"
 PYEOF
