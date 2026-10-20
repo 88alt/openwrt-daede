@@ -130,10 +130,45 @@ if [[ "$remote_main" = "$BASE_SHA" ]]; then
 fi
 
 notes="$rclone_dir/release-notes.md"
+BASE="https://github.com/kenzok8/openwrt-daede/releases/download/${tag}"
+ARCHS="aarch64_cortex-a53 aarch64_cortex-a72 aarch64_generic arm_cortex-a7_neon-vfpv4 arm_cortex-a9 arm_cortex-a9_neon i386_pentium4 x86_64"
+cell_ipk() {
+    pkg="$1"; arch="$2"; fallback="$3"
+    f=$(ls publish/release/${pkg}_*_${arch}.ipk 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "[$(basename $f)](${BASE}/$(basename $f))" || echo "$fallback"
+}
+cell_apk() {
+    pkg="$1"; arch="$2"
+    f=$(ls publish/release/${pkg}-*-${arch}.apk 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "[$(basename $f)](${BASE}/$(basename $f))" || echo "—"
+}
+noarch_ipk() {
+    pkg="$1"
+    f=$(ls publish/release/${pkg}_*_all.ipk 2>/dev/null | head -1)
+    [ -n "$f" ] && echo "[$(basename $f)](${BASE}/$(basename $f))" || echo "—"
+}
 {
     printf '# openwrt-daede %s\n\n' "$tag"
     printf 'Pinned upstream dae/daed release from candidate `%s`.\n\n' "$CANDIDATE_SHA"
-    printf 'All 16 SDK targets passed the patch audit and package gate. Build run: %s.\n' "$BUILD_RUN_ID"
+    printf 'All 16 SDK targets passed the patch audit and package gate. Build run: %s.\n\n' "$BUILD_RUN_ID"
+    echo "## Packages / 安装包"
+    echo ""
+    echo "## 📦 SDK 24.10 · 稳定版 (IPK)"
+    echo ""
+    echo "| 架构 | dae | daed | luci-app-daede |"
+    echo "| :--- | :--- | :--- | :--- |"
+    luci_fallback=$(noarch_ipk luci-app-daede)
+    for arch in $ARCHS; do
+        echo "| \`${arch}\` | $(cell_ipk dae $arch —) | $(cell_ipk daed $arch —) | $(cell_ipk luci-app-daede $arch "$luci_fallback") |"
+    done
+    echo ""
+    echo "## 📦 SDK 25.12 · 稳定版 (APK)"
+    echo ""
+    echo "| 架构 | dae | daed | luci-app-daede |"
+    echo "| :--- | :--- | :--- | :--- |"
+    for arch in $ARCHS; do
+        echo "| \`${arch}\` | $(cell_apk dae $arch) | $(cell_apk daed $arch) | $(cell_apk luci-app-daede $arch) |"
+    done
 } > "$notes"
 if ! gh release view "$tag" >/dev/null 2>&1; then
     gh release create "$tag" --draft --verify-tag --target "$CANDIDATE_SHA" \
