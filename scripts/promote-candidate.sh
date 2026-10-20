@@ -76,7 +76,9 @@ probe="r2:${R2_BUCKET}/openwrt-feed/daed-candidates/.write-probe-${GITHUB_RUN_ID
 rclone copyto publish/manifest.json "$probe"
 rclone deletefile "$probe"
 rclone copy publish/ "$stage/" --immutable --fast-list
-rclone check publish/ "$stage/" --download --fast-list
+# verification.json 是 gate 写入 stage 的验证记录（元数据，不属于发布内容，
+# 本地 publish/ 由构建产物生成、不含此文件），校验时排除。
+rclone check publish/ "$stage/" --download --fast-list --exclude verification.json
 
 # The unified feed also carries luci-app-daede from jell. Its version must not
 # supersede this candidate after main and the tag have moved.
