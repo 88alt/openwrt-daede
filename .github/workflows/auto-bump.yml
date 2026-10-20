@@ -684,7 +684,7 @@ jobs:
             }
             echo "verification.json already uploaded, identical"
           else
-            rclone copyto verification.json "$dest" --immutable
+            rclone copyto verification.json "$dest" --immutable --checksum
             echo "uploaded verification.json for $CANDIDATE_SHA"
           fi
 

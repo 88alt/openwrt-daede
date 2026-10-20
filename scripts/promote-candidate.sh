@@ -75,7 +75,9 @@ stage="r2:${R2_BUCKET}/openwrt-feed/daed-candidates/${CANDIDATE_SHA}"
 probe="r2:${R2_BUCKET}/openwrt-feed/daed-candidates/.write-probe-${GITHUB_RUN_ID:-$BUILD_RUN_ID}"
 rclone copyto publish/manifest.json "$probe"
 rclone deletefile "$probe"
-rclone copy publish/ "$stage/" --immutable --fast-list
+# --checksum：按内容比对。promote 重试时本地 publish/ 是重新生成的，
+# 文件 mtime 与 stage 里已上传的不同，只按时间戳比对会被 --immutable 误判为已修改。
+rclone copy publish/ "$stage/" --immutable --checksum --fast-list
 # verification.json 是 gate 写入 stage 的验证记录（元数据，不属于发布内容，
 # 本地 publish/ 由构建产物生成、不含此文件），校验时排除。
 rclone check publish/ "$stage/" --download --fast-list --exclude verification.json
@@ -174,7 +176,8 @@ gh release edit "$tag" --draft=false --prerelease=false
 git -c credential.helper='!gh auth git-credential' push origin \
     --delete "refs/tags/candidate/${CANDIDATE_SHA}" 2>/dev/null \
     || echo "warning: cannot delete candidate tag (non-fatal)"
-rclone copyto "$rclone_dir/pending.json" "$state/completed/${CANDIDATE_SHA}.json" --immutable
+# --checksum：promote 中断后重跑时文件已存在但内容相同，按内容比对可幂等。
+rclone copyto "$rclone_dir/pending.json" "$state/completed/${CANDIDATE_SHA}.json" --immutable --checksum
 rclone cat "$state/completed/${CANDIDATE_SHA}.json" > "$rclone_dir/completed.json"
 cmp -s "$rclone_dir/pending.json" "$rclone_dir/completed.json" || fail "completion state differs"
 rclone deletefile "$pending"
