@@ -10,11 +10,12 @@ on:
   workflow_dispatch:
     inputs:
       lane:
-        description: Upstream sync lane
+        description: Upstream sync lane, or current main for a code-only release
         required: true
         default: core
         type: choice
         options:
+          - current
           - core
           - perf
 
@@ -198,6 +199,10 @@ jobs:
           require_date "$DAE_VERSION" DAE_VERSION
 
           case "$LANE" in
+            current)
+              echo 'changed=true' >> "$GITHUB_OUTPUT"
+              echo 'changes=current main code' >> "$GITHUB_OUTPUT"
+              ;;
             core)
               daed_new=$(git ls-remote https://github.com/daeuniverse/daed HEAD | cut -f1)
               wing_new=$(git ls-remote https://github.com/daeuniverse/dae-wing HEAD | cut -f1)
@@ -316,7 +321,7 @@ jobs:
           go-version: "1.26.0"
 
       - name: Sync kenzok8 forks from olicesx
-        if: steps.detect.outputs.changed == 'true'
+        if: steps.detect.outputs.changed == 'true' && steps.lane.outputs.lane != 'current'
         env:
           GH_TOKEN: ${{ secrets.FORK_SYNC_TOKEN }}
           LANE: ${{ steps.lane.outputs.lane }}
@@ -377,6 +382,7 @@ jobs:
           set -euo pipefail
           echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           case "$LANE" in
+            current) ;;
             core)
               sed -i \
                 -e "s/^DAE_VERSION=.*/DAE_VERSION=$V/" \
@@ -399,10 +405,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B "$STAGING"
-          git add ci/pins.env
-          git commit -m "Bump upstream pins" \
-            -m "改动：将 $LANE 上游 pin 更新至 $V，并固定依赖提交。" \
-            -m "原因：让候选构建使用可追溯的上游版本。"
+          if [ "$LANE" != current ]; then
+            git add ci/pins.env
+            git commit -m "Bump upstream pins" \
+              -m "改动：将 $LANE 上游 pin 更新至 $V，并固定依赖提交。" \
+              -m "原因：让候选构建使用可追溯的上游版本。"
+          fi
           staging_sha=$(git rev-parse HEAD)
           if ! [[ "$staging_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::staging commit is not a full 40-character SHA: $staging_sha"
@@ -419,6 +427,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           INITIAL_SHA: ${{ steps.stage.outputs.staging_sha }}
+          LANE: ${{ steps.lane.outputs.lane }}
+          BASE_SHA: ${{ steps.stage.outputs.base_sha }}
         run: |
           set -euo pipefail
           require_sha() {
@@ -515,22 +525,32 @@ jobs:
             echo "::error::$STAGING starts at $current_sha, expected $INITIAL_SHA"
             exit 1
           fi
-          run_and_wait "$STAGING" assemble-dae-src.yml "$current_sha"
-          ASSEMBLE_DAE_RUN_ID=$LAST_RUN_ID
-          ASSEMBLE_DAE_ATTEMPT=$LAST_RUN_ATTEMPT
-          ASSEMBLE_DAE_HEAD_SHA=$current_sha
-          current_sha=$(fetch_staging_sha)
-          run_and_wait "$STAGING" assemble-daed-src.yml "$current_sha"
-          ASSEMBLE_DAED_RUN_ID=$LAST_RUN_ID
-          ASSEMBLE_DAED_ATTEMPT=$LAST_RUN_ATTEMPT
-          ASSEMBLE_DAED_HEAD_SHA=$current_sha
+          if [ "$LANE" != current ]; then
+            run_and_wait "$STAGING" assemble-dae-src.yml "$current_sha"
+            ASSEMBLE_DAE_RUN_ID=$LAST_RUN_ID
+            ASSEMBLE_DAE_ATTEMPT=$LAST_RUN_ATTEMPT
+            ASSEMBLE_DAE_HEAD_SHA=$current_sha
+            current_sha=$(fetch_staging_sha)
+            run_and_wait "$STAGING" assemble-daed-src.yml "$current_sha"
+            ASSEMBLE_DAED_RUN_ID=$LAST_RUN_ID
+            ASSEMBLE_DAED_ATTEMPT=$LAST_RUN_ATTEMPT
+            ASSEMBLE_DAED_HEAD_SHA=$current_sha
+          fi
           # 冻结点：assemble 完成后固定 candidate SHA。
           # 后续所有验证都针对 candidate tag，保证"验证的是哪个 SHA"可查。
           tested_sha=$(fetch_staging_sha)
           require_sha "$tested_sha" candidate
           candidate_tag="candidate/$tested_sha"
-          git tag "$candidate_tag" "$tested_sha"
-          git -c credential.helper='!gh auth git-credential' push origin "refs/tags/$candidate_tag"
+          existing_tag=$(git ls-remote origin "refs/tags/$candidate_tag" | cut -f1)
+          if [ -n "$existing_tag" ]; then
+            [ "$existing_tag" = "$tested_sha" ] || {
+              echo "::error::$candidate_tag points at $existing_tag, expected $tested_sha"
+              exit 1
+            }
+          else
+            git tag "$candidate_tag" "$tested_sha"
+            git -c credential.helper='!gh auth git-credential' push origin "refs/tags/$candidate_tag"
+          fi
           echo "candidate frozen at $tested_sha (tag $candidate_tag)"
           # audit 独立 workflow，对 candidate SHA 审计（结论可寻址、可核对）。
           run_and_wait "$candidate_tag" audit-upstream.yml "$tested_sha" -f sha="$tested_sha"
@@ -549,6 +569,8 @@ jobs:
           # 写验证记录：每项验证的 workflow / run / attempt / headSha。
           # 这只是关联信息；证明来自 promote 对 GitHub API 的核对。
           export CANDIDATE_SHA="$tested_sha" AUTO_BUMP_RUN_ID="${{ github.run_id }}"
+          export AUTO_BUMP_RUN_ATTEMPT="${{ github.run_attempt }}"
+          export LANE BASE_SHA STAGING
           export ASSEMBLE_DAE_RUN_ID ASSEMBLE_DAE_ATTEMPT ASSEMBLE_DAE_HEAD_SHA
           export ASSEMBLE_DAED_RUN_ID ASSEMBLE_DAED_ATTEMPT ASSEMBLE_DAED_HEAD_SHA
           export AUDIT_RUN_ID AUDIT_ATTEMPT SMOKE_RUN_ID SMOKE_ATTEMPT
@@ -562,15 +584,21 @@ jobs:
                       "head_sha": os.environ[head],
                       "conclusion": "success"}
           record = {
+              "schema_version": 2,
+              "kind": "main" if os.environ["LANE"] == "current" else "upstream",
               "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "base_sha": os.environ["BASE_SHA"],
+              "staging": os.environ["STAGING"],
               "auto_bump_run_id": int(os.environ["AUTO_BUMP_RUN_ID"]),
-              "verifications": [
+              "auto_bump_run_attempt": int(os.environ["AUTO_BUMP_RUN_ATTEMPT"]),
+              "verifications": ([
                   v("assemble-dae", ".github/workflows/assemble-dae-src.yml",
                     "ASSEMBLE_DAE_RUN_ID", "ASSEMBLE_DAE_ATTEMPT",
                     "ASSEMBLE_DAE_HEAD_SHA"),
                   v("assemble-daed", ".github/workflows/assemble-daed-src.yml",
                     "ASSEMBLE_DAED_RUN_ID", "ASSEMBLE_DAED_ATTEMPT",
                     "ASSEMBLE_DAED_HEAD_SHA"),
+              ] if os.environ["LANE"] != "current" else []) + [
                   v("audit", ".github/workflows/audit-upstream.yml",
                     "AUDIT_RUN_ID", "AUDIT_ATTEMPT", "CANDIDATE_SHA"),
                   v("smoke", ".github/workflows/test-daed-build.yml",
@@ -637,6 +665,7 @@ jobs:
             echo "## Candidate ready for 252 testing"
             echo "Staging branch: \`$STAGING\`"
             echo "Validated commit: \`$tested_sha\`"
+            echo "Publish via Promote verified daede candidate with candidate_sha=\`$tested_sha\`."
             echo "16 SDK package sets contain dae, daed, luci-app-daede, and vmlinux-btf."
             if [ "${{ github.event_name }}" = schedule ]; then
               echo "Automatic promotion will reuse these exact package artifacts."
@@ -706,10 +735,7 @@ jobs:
         run: |
           set -euo pipefail
           url=$(gh workflow run promote-candidate.yml --ref main \
-            -f base_sha="${{ needs.bump.outputs.base_sha }}" \
-            -f candidate_sha="${{ needs.bump.outputs.tested_sha }}" \
-            -f build_run_id="${{ needs.bump.outputs.gate_run_id }}" \
-            -f staging="${{ needs.bump.outputs.staging }}")
+            -f candidate_sha="${{ needs.bump.outputs.tested_sha }}")
           echo "$url"
           run_id=$(printf '%s\n' "$url" | sed -nE 's|.*/runs/([0-9]+).*|\1|p' | tail -1)
           [[ "$run_id" =~ ^[0-9]+$ ]] || {

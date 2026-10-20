@@ -3,20 +3,8 @@ name: Promote verified daede candidate
 on:
   workflow_dispatch:
     inputs:
-      base_sha:
-        description: Main SHA before the candidate was staged
-        required: true
-        type: string
       candidate_sha:
-        description: Exact validated staging SHA
-        required: true
-        type: string
-      build_run_id:
-        description: Successful 16-target release candidate run ID
-        required: true
-        type: string
-      staging:
-        description: Staging branch that points to the candidate SHA
+        description: Exact validated candidate SHA from the candidate run summary
         required: true
         type: string
 
@@ -41,41 +29,6 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
-      - name: Check candidate identity
-        env:
-          BASE_SHA: ${{ inputs.base_sha }}
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-          STAGING: ${{ inputs.staging }}
-        run: |
-          set -euo pipefail
-          [[ "$BASE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
-          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
-          [[ "$STAGING" =~ ^auto-bump-staging-[0-9]+-[0-9]+$ ]]
-          # 冻结语义：candidate 由 tag 标识；staging 分支在冻结后可能已移动，不再作为依据。
-          [ "$(git ls-remote origin "refs/tags/candidate/$CANDIDATE_SHA" | cut -f1)" = "$CANDIDATE_SHA" ] || {
-            echo "::error::candidate tag missing or moved"
-            exit 1
-          }
-          git fetch -q origin "$CANDIDATE_SHA"
-
-      - name: Download the verified build
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-        run: |
-          set -euo pipefail
-          gh run download "$BUILD_RUN_ID" --pattern 'packages-sdk*' --dir artifacts
-
-      - name: Verify release assets
-        env:
-          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-        run: |
-          set -euo pipefail
-          python3 scripts/prepare-release-assets.py artifacts publish "$CANDIDATE_SHA" "$BUILD_RUN_ID"
-
       - name: Install rclone (pinned)
         env:
           RCLONE_VER: "1.69.1"
@@ -89,13 +42,78 @@ jobs:
           unzip -q "$zip"
           sudo install -m 0755 "rclone-v${RCLONE_VER}-linux-amd64/rclone" /usr/local/bin/rclone
 
+      - name: Read frozen candidate identity
+        id: candidate
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          for name in R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ENDPOINT R2_BUCKET; do
+            [ -n "${!name}" ] || { echo "::error::missing $name"; exit 1; }
+          done
+          umask 077
+          temp=$(mktemp -d)
+          trap 'rm -rf "$temp"' EXIT
+          cat > "$temp/rclone.conf" <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          no_check_bucket = true
+          EOF
+          export RCLONE_CONFIG="$temp/rclone.conf"
+          rclone cat "r2:${R2_BUCKET}/openwrt-feed/daed-candidates/${CANDIDATE_SHA}/verification.json" > "$temp/verification.json"
+          jq -e --arg sha "$CANDIDATE_SHA" '
+            .schema_version == 2 and .candidate_sha == $sha and
+            (.kind == "main" or .kind == "upstream") and
+            (.base_sha | test("^[0-9a-f]{40}$")) and
+            (.staging | test("^auto-bump-staging-[0-9]+-[0-9]+$")) and
+            (.auto_bump_run_id | type == "number") and
+            (.auto_bump_run_attempt | type == "number") and
+            ([.verifications[] | select(.step == "matrix")] | length == 1) and
+            (if .kind == "main" then .base_sha == .candidate_sha else .base_sha != .candidate_sha end)
+          ' "$temp/verification.json" >/dev/null
+          echo "base_sha=$(jq -r .base_sha "$temp/verification.json")" >> "$GITHUB_OUTPUT"
+          echo "staging=$(jq -r .staging "$temp/verification.json")" >> "$GITHUB_OUTPUT"
+          echo "build_run_id=$(jq -r '.verifications[] | select(.step == "matrix") | .run_id' "$temp/verification.json")" >> "$GITHUB_OUTPUT"
+          # 冻结语义：candidate 由 tag 标识；staging 分支在冻结后可能已移动，不再作为依据。
+          [ "$(git ls-remote origin "refs/tags/candidate/$CANDIDATE_SHA" | cut -f1)" = "$CANDIDATE_SHA" ] || {
+            echo "::error::candidate tag missing or moved"
+            exit 1
+          }
+          git fetch -q origin "$CANDIDATE_SHA"
+
+      - name: Download the verified build
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ steps.candidate.outputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          gh run download "$BUILD_RUN_ID" --pattern 'packages-sdk*' --dir artifacts
+
+      - name: Verify release assets
+        env:
+          CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+          BUILD_RUN_ID: ${{ steps.candidate.outputs.build_run_id }}
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-release-assets.py artifacts publish "$CANDIDATE_SHA" "$BUILD_RUN_ID"
+
       - name: Promote exact candidate
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ inputs.base_sha }}
+          BASE_SHA: ${{ steps.candidate.outputs.base_sha }}
           CANDIDATE_SHA: ${{ inputs.candidate_sha }}
-          BUILD_RUN_ID: ${{ inputs.build_run_id }}
-          STAGING: ${{ inputs.staging }}
+          BUILD_RUN_ID: ${{ steps.candidate.outputs.build_run_id }}
+          STAGING: ${{ steps.candidate.outputs.staging }}
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
