@@ -24,8 +24,11 @@ permissions:
   contents: write
   actions: read
 
+# 独立并发组：auto-bump 的 promote job 会 dispatch 本 workflow 并等待，
+# 若共用 auto-bump-dae-daed 组会死锁（等待中的 run 挡住被等待的 run）。
+# 真正的互斥由 promote-candidate.sh 的 pending.json 槽位保证。
 concurrency:
-  group: auto-bump-dae-daed
+  group: promote-daede-candidate
   cancel-in-progress: false
 
 jobs:
@@ -50,7 +53,11 @@ jobs:
           [[ "$CANDIDATE_SHA" =~ ^[0-9a-f]{40}$ ]]
           [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
           [[ "$STAGING" =~ ^auto-bump-staging-[0-9]+-[0-9]+$ ]]
-          [ "$(git ls-remote origin "refs/heads/$STAGING" | cut -f1)" = "$CANDIDATE_SHA" ]
+          # 冻结语义：candidate 由 tag 标识；staging 分支在冻结后可能已移动，不再作为依据。
+          [ "$(git ls-remote origin "refs/tags/candidate/$CANDIDATE_SHA" | cut -f1)" = "$CANDIDATE_SHA" ] || {
+            echo "::error::candidate tag missing or moved"
+            exit 1
+          }
           git fetch -q origin "$CANDIDATE_SHA"
 
       - name: Download the verified build

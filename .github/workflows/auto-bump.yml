@@ -458,17 +458,27 @@ jobs:
               sleep 30
             done
           }
-          run_and_wait() { # <workflow-file> <expected-sha> [dispatch args...]
-            workflow=$1
-            expected_sha=$2
-            shift 2
+          run_and_wait() { # <ref> <workflow-file> <expected-sha> [dispatch args...]
+            ref=$1
+            workflow=$2
+            expected_sha=$3
+            shift 3
             require_sha "$expected_sha" "$workflow expected head"
-            remote_sha=$(fetch_staging_sha)
-            if [ "$remote_sha" != "$expected_sha" ]; then
-              echo "::error::$STAGING moved to $remote_sha before dispatching $workflow; expected $expected_sha"
-              exit 1
+            if [[ "$ref" == candidate/* ]]; then
+              tag_sha=$(git ls-remote origin "refs/tags/$ref" | cut -f1)
+              require_sha "$tag_sha" "candidate tag $ref"
+              if [ "$tag_sha" != "$expected_sha" ]; then
+                echo "::error::candidate tag $ref points at $tag_sha, expected $expected_sha"
+                exit 1
+              fi
+            else
+              remote_sha=$(fetch_staging_sha)
+              if [ "$remote_sha" != "$expected_sha" ]; then
+                echo "::error::$STAGING moved to $remote_sha before dispatching $workflow; expected $expected_sha"
+                exit 1
+              fi
             fi
-            dispatch_output=$(gh workflow run "$workflow" --ref "$STAGING" "$@")
+            dispatch_output=$(gh workflow run "$workflow" --ref "$ref" "$@")
             echo "$dispatch_output"
             run_id=$(printf '%s\n' "$dispatch_output" \
               | sed -nE 's|.*actions/runs/([0-9]+).*|\1|p' | tail -1)
@@ -491,6 +501,12 @@ jobs:
             echo "watching $workflow run $run_id at $expected_sha"
             wait_run "$run_id"
             LAST_RUN_ID=$run_id
+            LAST_RUN_ATTEMPT=$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/$run_id" --jq '.run_attempt')
+            if ! [[ "$LAST_RUN_ATTEMPT" =~ ^[0-9]+$ ]]; then
+              echo "::error::cannot read attempt for run $run_id"
+              exit 1
+            fi
+            echo "run $run_id attempt $LAST_RUN_ATTEMPT"
           }
 
           require_sha "$INITIAL_SHA" initial-staging
@@ -499,20 +515,73 @@ jobs:
             echo "::error::$STAGING starts at $current_sha, expected $INITIAL_SHA"
             exit 1
           fi
-          run_and_wait assemble-dae-src.yml "$current_sha"
+          run_and_wait "$STAGING" assemble-dae-src.yml "$current_sha"
+          ASSEMBLE_DAE_RUN_ID=$LAST_RUN_ID
+          ASSEMBLE_DAE_ATTEMPT=$LAST_RUN_ATTEMPT
+          ASSEMBLE_DAE_HEAD_SHA=$current_sha
           current_sha=$(fetch_staging_sha)
-          run_and_wait assemble-daed-src.yml "$current_sha"
+          run_and_wait "$STAGING" assemble-daed-src.yml "$current_sha"
+          ASSEMBLE_DAED_RUN_ID=$LAST_RUN_ID
+          ASSEMBLE_DAED_ATTEMPT=$LAST_RUN_ATTEMPT
+          ASSEMBLE_DAED_HEAD_SHA=$current_sha
+          # 冻结点：assemble 完成后固定 candidate SHA。
+          # 后续所有验证都针对 candidate tag，保证"验证的是哪个 SHA"可查。
           tested_sha=$(fetch_staging_sha)
-          audit_dir=$(mktemp -d)
-          trap 'rm -rf "$audit_dir"' EXIT
-          git archive "$tested_sha" | tar -x -C "$audit_dir"
-          env -u GH_TOKEN -u GITHUB_TOKEN bash "$audit_dir/scripts/audit-upstream.sh" "$audit_dir"
+          require_sha "$tested_sha" candidate
+          candidate_tag="candidate/$tested_sha"
+          git tag "$candidate_tag" "$tested_sha"
+          git -c credential.helper='!gh auth git-credential' push origin "refs/tags/$candidate_tag"
+          echo "candidate frozen at $tested_sha (tag $candidate_tag)"
+          # audit 独立 workflow，对 candidate SHA 审计（结论可寻址、可核对）。
+          run_and_wait "$candidate_tag" audit-upstream.yml "$tested_sha" -f sha="$tested_sha"
+          AUDIT_RUN_ID=$LAST_RUN_ID
+          AUDIT_ATTEMPT=$LAST_RUN_ATTEMPT
           # A single real SDK build catches wing/core compile errors before the
           # full matrix. The test workflow also checks for both package files.
-          run_and_wait test-daed-build.yml "$tested_sha" -f packages="dae daed" -f arch=x86_64 -f sdk=25.12
+          run_and_wait "$candidate_tag" test-daed-build.yml "$tested_sha" -f sha="$tested_sha" -f packages="dae daed" -f arch=x86_64 -f sdk=25.12
+          SMOKE_RUN_ID=$LAST_RUN_ID
+          SMOKE_ATTEMPT=$LAST_RUN_ATTEMPT
           # Build the exact four-package release matrix without publishing.
-          run_and_wait release.yml "$tested_sha" -f candidate=true
+          run_and_wait "$candidate_tag" release.yml "$tested_sha" -f sha="$tested_sha"
           gate_run_id=$LAST_RUN_ID
+          MATRIX_RUN_ID=$gate_run_id
+          MATRIX_ATTEMPT=$LAST_RUN_ATTEMPT
+          # 写验证记录：每项验证的 workflow / run / attempt / headSha。
+          # 这只是关联信息；证明来自 promote 对 GitHub API 的核对。
+          export CANDIDATE_SHA="$tested_sha" AUTO_BUMP_RUN_ID="${{ github.run_id }}"
+          export ASSEMBLE_DAE_RUN_ID ASSEMBLE_DAE_ATTEMPT ASSEMBLE_DAE_HEAD_SHA
+          export ASSEMBLE_DAED_RUN_ID ASSEMBLE_DAED_ATTEMPT ASSEMBLE_DAED_HEAD_SHA
+          export AUDIT_RUN_ID AUDIT_ATTEMPT SMOKE_RUN_ID SMOKE_ATTEMPT
+          export MATRIX_RUN_ID MATRIX_ATTEMPT
+          python3 <<'PYEOF' > verification.json
+          import json, os
+          def v(step, workflow, run, attempt, head):
+              return {"step": step, "workflow": workflow,
+                      "run_id": int(os.environ[run]),
+                      "attempt": int(os.environ[attempt]),
+                      "head_sha": os.environ[head],
+                      "conclusion": "success"}
+          record = {
+              "candidate_sha": os.environ["CANDIDATE_SHA"],
+              "auto_bump_run_id": int(os.environ["AUTO_BUMP_RUN_ID"]),
+              "verifications": [
+                  v("assemble-dae", "assemble-dae-src.yml",
+                    "ASSEMBLE_DAE_RUN_ID", "ASSEMBLE_DAE_ATTEMPT",
+                    "ASSEMBLE_DAE_HEAD_SHA"),
+                  v("assemble-daed", "assemble-daed-src.yml",
+                    "ASSEMBLE_DAED_RUN_ID", "ASSEMBLE_DAED_ATTEMPT",
+                    "ASSEMBLE_DAED_HEAD_SHA"),
+                  v("audit", "audit-upstream.yml",
+                    "AUDIT_RUN_ID", "AUDIT_ATTEMPT", "CANDIDATE_SHA"),
+                  v("smoke", "test-daed-build.yml",
+                    "SMOKE_RUN_ID", "SMOKE_ATTEMPT", "CANDIDATE_SHA"),
+                  v("matrix", "release.yml",
+                    "MATRIX_RUN_ID", "MATRIX_ATTEMPT", "CANDIDATE_SHA"),
+              ],
+          }
+          print(json.dumps(record, indent=2))
+          PYEOF
+          cat verification.json
           after_gate_sha=$(fetch_staging_sha)
           if [ "$after_gate_sha" != "$tested_sha" ]; then
             echo "::error::$STAGING moved to $after_gate_sha after gate tested $tested_sha"
@@ -576,60 +645,76 @@ jobs:
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Upload verification record
+        id: verify_upload
+        if: steps.gate.outputs.tested_sha != ''
+        env:
+          CANDIDATE_SHA: ${{ steps.gate.outputs.tested_sha }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          # 安装 rclone（pinned，与其他步骤一致；下载阶段不持 secret）
+          zip="rclone-v1.69.1-linux-amd64.zip"
+          base="https://downloads.rclone.org/v1.69.1"
+          curl -fsSL -o "$zip" "${base}/${zip}"
+          curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
+          grep " ${zip}$" SHA256SUMS | sha256sum -c -
+          unzip -q "$zip"
+          sudo install -m 0755 "rclone-v1.69.1-linux-amd64/rclone" /usr/local/bin/rclone
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [r2]
+          type = s3
+          provider = Cloudflare
+          access_key_id = ${R2_ACCESS_KEY_ID}
+          secret_access_key = ${R2_SECRET_ACCESS_KEY}
+          endpoint = ${R2_ENDPOINT}
+          acl = private
+          no_check_bucket = true
+          EOF
+          dest="r2:${R2_BUCKET}/openwrt-feed/daed-candidates/${CANDIDATE_SHA}/verification.json"
+          # immutable：已存在且内容不同则失败，防止覆盖
+          if rclone lsf "r2:${R2_BUCKET}/openwrt-feed/daed-candidates/${CANDIDATE_SHA}/" --files-only 2>/dev/null | grep -Fxq verification.json; then
+            rclone cat "$dest" | cmp -s - verification.json || {
+              echo "::error::verification.json already exists with different content"
+              exit 1
+            }
+            echo "verification.json already uploaded, identical"
+          else
+            rclone copyto verification.json "$dest" --immutable
+            echo "uploaded verification.json for $CANDIDATE_SHA"
+          fi
+
   promote:
     name: Publish validated candidate
     needs: bump
     if: github.event_name == 'schedule' && needs.bump.outputs.changed == 'true' && vars.ENABLE_UNATTENDED_RELEASE == 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: write
-      actions: read
+      actions: write
     steps:
-      - uses: actions/checkout@v6
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Download the verified build
+      # 自动晋升与手动晋升共用实现：dispatch promote-candidate.yml 并等待。
+      # promote-candidate.yml 用了独立的 concurrency group，
+      # 不会与本 run 的 auto-bump-dae-daed 组死锁；真正的互斥由
+      # promote-candidate.sh 的 pending.json 槽位保证。
+      - name: Dispatch candidate promotion
         env:
           GH_TOKEN: ${{ github.token }}
-          BUILD_RUN_ID: ${{ needs.bump.outputs.gate_run_id }}
         run: |
           set -euo pipefail
-          gh run download "$BUILD_RUN_ID" --pattern 'packages-sdk*' --dir artifacts
-
-      - name: Verify and stage release bytes
-        env:
-          CANDIDATE_SHA: ${{ needs.bump.outputs.tested_sha }}
-          BUILD_RUN_ID: ${{ needs.bump.outputs.gate_run_id }}
-        run: |
-          set -euo pipefail
-          git fetch -q origin "$CANDIDATE_SHA"
-          python3 scripts/prepare-release-assets.py artifacts publish "$CANDIDATE_SHA" "$BUILD_RUN_ID"
-
-      - name: Install rclone (pinned)
-        env:
-          RCLONE_VER: "1.69.1"
-        run: |
-          set -euo pipefail
-          zip="rclone-v${RCLONE_VER}-linux-amd64.zip"
-          base="https://downloads.rclone.org/v${RCLONE_VER}"
-          curl -fsSL -o "$zip" "${base}/${zip}"
-          curl -fsSL -o SHA256SUMS "${base}/SHA256SUMS"
-          grep " ${zip}$" SHA256SUMS | sha256sum -c -
-          unzip -q "$zip"
-          sudo install -m 0755 "rclone-v${RCLONE_VER}-linux-amd64/rclone" /usr/local/bin/rclone
-
-      - name: Promote exact candidate
-        env:
-          GH_TOKEN: ${{ github.token }}
-          BASE_SHA: ${{ needs.bump.outputs.base_sha }}
-          CANDIDATE_SHA: ${{ needs.bump.outputs.tested_sha }}
-          BUILD_RUN_ID: ${{ needs.bump.outputs.gate_run_id }}
-          STAGING: ${{ needs.bump.outputs.staging }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-          AGGREGATE_FEED_TOKEN: ${{ secrets.AGGREGATE_FEED_TOKEN }}
-        run: bash scripts/promote-candidate.sh
+          url=$(gh workflow run promote-candidate.yml --ref main \
+            -f base_sha="${{ needs.bump.outputs.base_sha }}" \
+            -f candidate_sha="${{ needs.bump.outputs.tested_sha }}" \
+            -f build_run_id="${{ needs.bump.outputs.gate_run_id }}" \
+            -f staging="${{ needs.bump.outputs.staging }}")
+          echo "$url"
+          run_id=$(printf '%s\n' "$url" | sed -nE 's|.*/runs/([0-9]+).*|\1|p' | tail -1)
+          [[ "$run_id" =~ ^[0-9]+$ ]] || {
+            echo "::error::cannot read promote run ID from: $url"
+            exit 1
+          }
+          echo "promote run: $run_id"
+          gh run watch "$run_id" --exit-status

@@ -2,10 +2,17 @@ name: Test daed build
 
 # Iteration-only: builds dae/daed for release targets and uploads package artifacts.
 # No feed upload, no release — safe to run on feature branches.
+# Gate 用法：必须用 --ref candidate/<SHA>（tag）触发，并传 sha 输入，
+# 构建 checkout 该 SHA，保证"验证的是哪个 SHA"可查。
 
 on:
   workflow_dispatch:
     inputs:
+      sha:
+        description: 'Candidate SHA to build (must match the candidate tag); empty = trigger ref (iteration use)'
+        type: string
+        required: false
+        default: ''
       packages:
         description: Packages to build
         default: "dae daed"
@@ -45,6 +52,9 @@ jobs:
         sdk: ${{ fromJSON(inputs.sdk == 'all' && '["24.10","25.12"]' || format('["{0}"]', inputs.sdk)) }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          # sha 为空时用触发 ref（日常迭代）；gate 必须传 candidate SHA。
+          ref: ${{ inputs.sha != '' && inputs.sha || github.ref }}
 
       - name: Prepare SDK action with pahole
         uses: actions/checkout@v6
