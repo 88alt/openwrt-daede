@@ -70,7 +70,7 @@ print("CANDIDATE\t" + record["candidate_sha"])
 jobs = {
     "assemble-dae":  (".github/workflows/assemble-dae-src.yml", "assemble"),
     "assemble-daed": (".github/workflows/assemble-daed-src.yml", "assemble"),
-    "audit":         (".github/workflows/audit-upstream.yml", "audit"),
+    "audit":         (".github/workflows/audit-upstream.yml", "Audit upstream pins"),
     "smoke":         (".github/workflows/test-daed-build.yml", "build"),
     "matrix":        (".github/workflows/release.yml", "Verify built packages"),
 }
@@ -105,10 +105,10 @@ while IFS=$'\t' read -r step run_id attempt head_sha job_name expected_path; do
 
     # run 级核对：workflow、headSha、结论、attempt
     run_json=$(gh api "repos/${REPO}/actions/runs/${run_id}" \
-        --jq '{path: .path, headSha: .headSha, conclusion: .conclusion}') \
+        --jq '{path: .path, head_sha: .head_sha, conclusion: .conclusion}') \
         || fail "$step: cannot read run $run_id"
     run_path=$(printf '%s' "$run_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["path"])')
-    run_head=$(printf '%s' "$run_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["headSha"])')
+    run_head=$(printf '%s' "$run_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["head_sha"])')
     run_conc=$(printf '%s' "$run_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["conclusion"])')
 
     # workflow 路径必须在受信任列表（python 段已断言 step 合法，这里再对一次 API 返回）
@@ -122,8 +122,9 @@ while IFS=$'\t' read -r step run_id attempt head_sha job_name expected_path; do
     # 旧 attempt 对同一 SHA 的证明（job 级按记录的 attempt 查）。
 
     # job 级核对：该 attempt 里对应 job 必须 success
+    # job 名用前缀匹配：smoke 的 job 名带矩阵参数（如 "build (x86_64, 25.12)"）。
     job_conc=$(gh api "repos/${REPO}/actions/runs/${run_id}/attempts/${attempt}/jobs" --paginate \
-        --jq --arg job "$job_name" '[.jobs[] | select(.name == $job) | .conclusion] | first // "missing"') \
+        --jq --arg job "$job_name" '[.jobs[] | select(.name | startswith($job)) | .conclusion] | first // "missing"') \
         || fail "$step: cannot read jobs for run $run_id attempt $attempt"
     [[ "$job_conc" == "success" ]] || \
         fail "$step: job '$job_name' concluded $job_conc (run $run_id attempt $attempt)"
